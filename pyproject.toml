@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "universal-rag-document-agent"
+version = "0.1.0"
+description = "Fully on-premise RAG document agent"
+requires-python = ">=3.11"
+# Versions are pinned as each slice lands (build order in CLAUDE.md).
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "pydantic",
+    "pydantic-settings",
+    "httpx",                 # Ollama client
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers",
+    "numpy",
+    "pymupdf",
+    "python-docx",
+    "python-pptx",
+    "pandas",
+    "openpyxl",
+    "markdown-it-py",
+    "selectolax",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+markers = ["local_llm: exercises the real bge model and a running Ollama"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

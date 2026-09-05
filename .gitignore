@@ -1,0 +1,22 @@
+# runtime data (blobs, faiss indexes, sqlite, extraction cache)
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.index
+
+# env / secrets
+.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# models cache (sentence-transformers / HF)
+.cache/
