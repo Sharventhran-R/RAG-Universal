@@ -23,7 +23,6 @@ Known Phase 1 limitations: no code-block detection (rare in PDFs).
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 
 import pymupdf
@@ -31,6 +30,7 @@ import pymupdf
 from app.ir import Locator
 from app.parsers._common import (
     FLAG_LOW_CONFIDENCE_TABLE,
+    LIST_ITEM_RE,
     BlockBuilder,
     PlainText,
     SectionPath,
@@ -40,7 +40,6 @@ from app.parsers._common import (
 from app.parsers.base import EMPTY_NO_TEXT, ParseInput, ParseResult, register_parser
 
 _MAX_HEADING_CHARS = 160
-_LIST_RE = re.compile(r"^\s*(?:[•◦▪·–\-\*]\s+|\(?\d+[.)]\s+)")
 _HEADING_MIN_DELTA = 0.5          # a heading size must exceed body size by this
 _INSIDE_RATIO = 0.7              # text block counts as "in" a table at this overlap
 
@@ -190,7 +189,7 @@ def _parse_page(
             sect.enter(heading_sizes.index(rsize) + 1, content)
             continue
 
-        block_type = "list_item" if _LIST_RE.match(content) else "paragraph"
+        block_type = "list_item" if LIST_ITEM_RE.match(content) else "paragraph"
         start, end = text.add(content)
         builder.add(
             block_type,

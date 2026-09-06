@@ -16,11 +16,15 @@ the format-specific code in the parser and the format-neutral mechanics here.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
 from app.ir import Block, BlockType, Locator
 from app.parsers.base import ParseInput, ParseResult
+
+# A line that opens with a bullet glyph or an enumerator -> list_item.
+LIST_ITEM_RE = re.compile(r"^\s*(?:[•◦▪·–\-\*]\s+|\(?\d+[.)]\s+)")
 
 
 class SectionPath:

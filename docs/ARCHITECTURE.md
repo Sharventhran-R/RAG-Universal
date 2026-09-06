@@ -144,7 +144,8 @@ zero blocks). `extraction_flags` names *why* (`pdf_no_text_layer`,
 
 `extraction_flags` seen in Phase 1: `low_confidence_table`, `pdf_no_text_layer`,
 `docx_no_text`, `pptx_chart_skipped`, `pptx_group_not_recursed`, `pptx_no_text`,
-`sheet_empty`, `sheet_all_string_columns`, `spreadsheet_no_data`.
+`sheet_empty`, `sheet_all_string_columns`, `spreadsheet_no_data`,
+`text_no_content`, `markdown_no_content`, `html_no_content`, `html_unstructured`.
 
 | Format   | Library        | Locator populated | Notes |
 |----------|----------------|-------------------|-------|
@@ -153,8 +154,9 @@ zero blocks). `extraction_flags` names *why* (`pdf_no_text_layer`,
 | pptx     | python-pptx    | `slide`, `char_*` | slide title → level-1 heading; notes → `[title, "Notes"]`; charts/groups flagged, pictures skipped |
 | xlsx     | pandas + openpyxl | `sheet`, `char_*` | `XlsxParser`; see below |
 | csv      | pandas         | `sheet` (= file stem), `char_*` | `CsvParser` (separate class, own `file_type`); delimiter sniff with fallbacks |
-| txt/md   | markdown-it-py (md); plain split (txt) | `char_*` | *not yet built* |
-| html     | selectolax     | `char_*` | *not yet built* |
+| txt      | stdlib splitter | `char_*` | `TextParser`; blank-line blocks; all-list-line block → `list_item`s; no headings |
+| md       | markdown-it-py | `char_*` | `MarkdownParser`; `#`.. → headings + `section_path`; fences → `code`; GFM tables → `table_verdict` |
+| html     | selectolax     | `char_*` | `HtmlParser`; drops script/style/nav/…; `<title>` = persistent root (level 0); recurse containers, emit leaf blocks; unstructured body → one `paragraph` + `html_unstructured` |
 
 ### Spreadsheets — one summary block is the retrieval unit
 

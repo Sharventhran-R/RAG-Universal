@@ -81,6 +81,9 @@ def test_supported_mimetypes_is_sorted(reg: ParserRegistry):
             "xlsx",
         ),
         ("text/csv", "x.csv", "csv"),
+        ("text/plain", "x.txt", "txt"),
+        ("text/markdown", "x.md", "md"),
+        ("text/html", "x.html", "html"),
     ],
 )
 def test_real_registry_dispatches_every_phase1_format(mimetype, filename, expected_file_type):

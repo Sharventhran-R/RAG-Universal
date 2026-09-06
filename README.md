@@ -30,9 +30,9 @@ tests. See the status table below for exactly what is and isn't there.
 | **Parser: DOCX** | `app/parsers/docx.py` | ✅ python-docx — heading styles, list styles, layout-table flattening |
 | **Parser: PPTX** | `app/parsers/pptx.py` | ✅ python-pptx — slide title → section, bullets, speaker notes, chart/group flags |
 | **Parser: XLSX / CSV** | `app/parsers/spreadsheet.py` | ✅ pandas — one `embeddable=True` summary block per sheet, `embeddable=False` row windows |
-| **Parser: TXT / MD** | — | ❌ not started |
-| **Parser: HTML** | — | ❌ not started |
-| **Chunking** | `app/chunk/` | ❌ not started |
+| **Parser: TXT / MD** | `app/parsers/text.py` | ✅ blank-line blocks (txt); markdown-it headings/code/lists/tables (md) |
+| **Parser: HTML** | `app/parsers/html.py` | ✅ selectolax — strips script/style/nav, `<title>` root, container recursion, table gate |
+| **Chunking** | `app/chunk/` | ❌ not started ← **next** |
 | **Embeddings** | `app/embed/` | ❌ not started |
 | **FAISS store** | `app/index/` | ❌ not started |
 | **Query loop** | `app/query/`, `app/llm/` | ❌ not started |
@@ -58,7 +58,8 @@ Everything that currently has code and tests needs only this subset:
 
 ```bash
 pip install pytest pydantic pydantic-settings \
-            pymupdf python-docx python-pptx pandas openpyxl
+            pymupdf python-docx python-pptx pandas openpyxl \
+            markdown-it-py selectolax
 ```
 
 The full dependency set (adds `faiss-cpu`, `sentence-transformers` → torch, and
@@ -80,7 +81,7 @@ own SQLite file under a temp dir, and `app/config.py` has working defaults.
 pytest -q
 ```
 
-Expected: **73 passed**, in a few seconds, fully offline (no model downloads, no
+Expected: **92 passed**, in a few seconds, fully offline (no model downloads, no
 Ollama, no network).
 
 Useful variants:
@@ -111,6 +112,8 @@ Ollama) and currently selects nothing.
 | `tests/test_parser_docx.py` | heading/list styles, `section_path`, no page locator, 1×1 layout table flattened to text + flagged, empty doc → `empty_no_text` |
 | `tests/test_parser_pptx.py` | title emitted once, bullets, per-slide locators, chart recorded as `pptx_chart_skipped`, no-slides deck → `empty_no_text` |
 | `tests/test_parser_spreadsheet.py` | exactly one embeddable summary block per sheet, summary content shape, row windows stored `embeddable=False`, `sheet_empty` / `sheet_all_string_columns` flags, CSV stem as sheet name, empty CSV → `empty_no_text`, single-column CSV survives delimiter-sniff failure |
+| `tests/test_parser_text.py` | txt blank-line blocks + all-list-line detection + no headings; md headings/`section_path`/code/lists/GFM tables, degenerate 1-col table flagged, empty → `empty_no_text` |
+| `tests/test_parser_html.py` | script/style/nav stripped, `<title>` as persistent root, container recursion + nested list/table extraction, unstructured body → one paragraph + `html_unstructured`, layout table flattened, empty body → `empty_no_text` |
 
 ---
 
@@ -163,7 +166,7 @@ app/
   db/                   sqlite: schema.sql, connection, models, repo
   parsers/
     base.py _common.py  interface + shared mechanics
-    pdf.py docx.py pptx.py spreadsheet.py
+    pdf.py docx.py pptx.py spreadsheet.py text.py html.py
   retrieval/filters.py  metadata-filter chokepoint (signatures)
 docs/ARCHITECTURE.md    the contract — read this first
 CLAUDE.md               invariants + how to add a parser
