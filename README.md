@@ -32,9 +32,9 @@ tests. See the status table below for exactly what is and isn't there.
 | **Parser: XLSX / CSV** | `app/parsers/spreadsheet.py` | ✅ pandas — one `embeddable=True` summary block per sheet, `embeddable=False` row windows |
 | **Parser: TXT / MD** | `app/parsers/text.py` | ✅ blank-line blocks (txt); markdown-it headings/code/lists/tables (md) |
 | **Parser: HTML** | `app/parsers/html.py` | ✅ selectolax — strips script/style/nav, `<title>` root, container recursion, table gate |
-| **Chunking** | `app/chunk/` | ❌ not started ← **next** |
-| **Embeddings** | `app/embed/` | ❌ not started |
-| **FAISS store** | `app/index/` | ❌ not started |
+| **Chunking** | `app/chunk/chunker.py` | ✅ structure-aware sliding window → `ChunkDraft`; block-boundary atomicity, heading seating, overlap carry, `embeddable=False` passthrough, prefix truncation |
+| **Embeddings** | `app/embed/` | ✅ `Embedder` protocol, `FakeEmbedder` (offline hash), `BgeEmbedder` (lazy sentence-transformers) |
+| **FAISS store** | `app/index/` | ❌ not started ← **next** |
 | **Query loop** | `app/query/`, `app/llm/` | ❌ not started |
 | **Ingest worker** | `app/worker.py` | ❌ not started |
 | **HTTP API** | `app/api/` | ❌ not started |
@@ -57,7 +57,7 @@ python -m venv .venv
 Everything that currently has code and tests needs only this subset:
 
 ```bash
-pip install pytest pydantic pydantic-settings \
+pip install pytest pydantic pydantic-settings numpy \
             pymupdf python-docx python-pptx pandas openpyxl \
             markdown-it-py selectolax
 ```
@@ -81,8 +81,9 @@ own SQLite file under a temp dir, and `app/config.py` has working defaults.
 pytest -q
 ```
 
-Expected: **92 passed**, in a few seconds, fully offline (no model downloads, no
-Ollama, no network).
+Expected: **112 passed, 1 skipped**, in a few seconds, fully offline (no model
+downloads, no Ollama, no network). The skip is `tests/test_embed_bge.py`
+(`-m local_llm` — real bge model).
 
 Useful variants:
 
@@ -114,6 +115,9 @@ Ollama) and currently selects nothing.
 | `tests/test_parser_spreadsheet.py` | exactly one embeddable summary block per sheet, summary content shape, row windows stored `embeddable=False`, `sheet_empty` / `sheet_all_string_columns` flags, CSV stem as sheet name, empty CSV → `empty_no_text`, single-column CSV survives delimiter-sniff failure |
 | `tests/test_parser_text.py` | txt blank-line blocks + all-list-line detection + no headings; md headings/`section_path`/code/lists/GFM tables, degenerate 1-col table flagged, empty → `empty_no_text` |
 | `tests/test_parser_html.py` | script/style/nav stripped, `<title>` as persistent root, container recursion + nested list/table extraction, unstructured body → one paragraph + `html_unstructured`, layout table flattened, empty body → `empty_no_text` |
+| `tests/test_chunk.py` | sequential `ord`, heading seating, budget flush + overlap carry, table/code atomic & never merged, oversized block kept whole, lone-heading merges into its table, `embeddable=False` → `embedded=0`, chunk locator spans first→last block, prefix = `filename > …last 2 levels`, long-filename middle-elision leaves body intact |
+| `tests/test_embed_fake.py` | protocol conformance, float32 + L2-normalized, deterministic, lexical overlap ranks above unrelated, empty text stays a unit vector, word/punct token count |
+| `tests/test_embed_bge.py` | *(skipped unless `-m local_llm`)* real bge dim/normalization, asymmetric query prefix, monotonic token count |
 
 ---
 
@@ -167,6 +171,8 @@ app/
   parsers/
     base.py _common.py  interface + shared mechanics
     pdf.py docx.py pptx.py spreadsheet.py text.py html.py
+  chunk/chunker.py      structure-aware sliding window -> ChunkDraft
+  embed/                base.py (protocol) + bge.py (real, lazy) + fake.py (CI)
   retrieval/filters.py  metadata-filter chokepoint (signatures)
 docs/ARCHITECTURE.md    the contract — read this first
 CLAUDE.md               invariants + how to add a parser

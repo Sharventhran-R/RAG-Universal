@@ -74,8 +74,8 @@ a matching ARCHITECTURE edit. (`IR_VERSION = 3` — `embeddable` @ v2, `flag` @ 
 1. `docs/ARCHITECTURE.md`, `CLAUDE.md`, IR, parser registry, filter chokepoint signature — **done, under review**
 2. storage/models (`app/db/`, `app/paths.py`, `app/config.py`)
 3. parsers — pdf, docx, pptx, spreadsheet, text (txt/md), html — **all done**
-4. chunk + embed  ← next
-5. FAISS store (`app/index/`)
+4. chunk + embed — `app/chunk/chunker.py`, `app/embed/{base,bge,fake}.py` — **done**
+5. FAISS store (`app/index/`)  ← next
 6. query (`app/query/`, `app/llm/`)
 7. `make seed` + tests
 

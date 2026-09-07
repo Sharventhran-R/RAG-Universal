@@ -54,8 +54,8 @@ app/
     base.py                # Parser protocol + ParserRegistry            (done)
     pdf.py docx.py pptx.py spreadsheet.py text.py html.py
   extract/                 # extraction cache, id assignment, orchestration
-  chunk/                   # sliding-window chunker (block-boundary aware)
-  embed/                   # Embedder protocol, bge impl, fake impl
+  chunk/                   # chunker.py -- structure-aware sliding window -> ChunkDraft
+  embed/                   # base.py (Embedder) + bge.py (real, lazy) + fake.py (CI)
   index/                   # FAISS store: open/create/persist/add/remove, per-session lock
   retrieval/
     filters.py             # ChunkFilter + resolve_allowed_ids + search + retrieve  (done)
@@ -273,9 +273,20 @@ re-extraction; removed when the document is deleted.
 - **512 tokens, 128 overlap**, counted with the embedding model's own tokenizer
   (bge-small is BERT wordpiece, hard max 512).
 - **Respect block boundaries.** A window boundary only ever falls between
-  blocks. `table` and `code` blocks are atomic. A `table` block with
-  `embeddable=False` becomes a chunk row but is **not** sent to the embedder and
-  gets no `faiss_id`-backed vector.
+  blocks. `table` and `code` blocks are atomic — one chunk each, never split
+  (even over budget), never merged with prose or another atomic block. A `table`
+  block with `embeddable=False` becomes a chunk row but is **not** sent to the
+  embedder and gets no `faiss_id`-backed vector.
+- A `heading` flushes the current window (no overlap carried across it) and
+  seats itself at the top of the next chunk. A heading with nothing after it
+  (`heading` → `heading`/`table`/`code`) is **not** a chunk on its own — it is
+  prepended to the next block's chunk, so "Table 3: Revenue" rides with its
+  table. A document that is nothing but headings still yields one chunk.
+- `paragraph`/`list_item` accumulate to `CHUNK_TOKENS`; on a size flush,
+  trailing blocks up to `CHUNK_OVERLAP` tokens carry into the next window. A
+  single block over budget is its own chunk (the embedder truncates at 512).
+- Chunk `section_path` = the first block's path, or (if that block is a heading)
+  its path **plus its own text**.
 - Each chunk's embedding input is `"{prefix}\n\n{chunk_text}"` where
   `prefix = "{filename} > {short_section_path}"`.
 
@@ -442,18 +453,24 @@ Response shape:
 
 ## 11. Embeddings
 
-`app/embed/`. `Embedder` protocol: `dim: int`, `embed_documents(texts)`,
-`embed_query(text)` → `np.ndarray` (float32, L2-normalized).
+`app/embed/`. `Embedder` protocol: `dim: int`, `max_tokens: int`,
+`count_tokens(text) -> int`, `embed_documents(texts)`, `embed_query(text)` →
+`np.ndarray` (float32, L2-normalized; `(n, dim)` / `(dim,)`). `count_tokens`
+uses the model's own tokenizer so the chunker respects `max_tokens`.
+`app/embed/__init__.py::get_embedder(fake=…)` is the wiring point.
 
-- Model `BAAI/bge-small-en-v1.5`, 384-dim, `normalize_embeddings=True`.
+- `BgeEmbedder` (`app/embed/bge.py`) — `BAAI/bge-small-en-v1.5`, 384-dim,
+  `normalize_embeddings=True`. **The only module importing sentence-transformers**,
+  and it does so lazily (model loads on first use). `EMBED_DIM` is verified
+  against `model.get_sentence_embedding_dimension()` on load; mismatch raises.
 - **Asymmetric retrieval — flagged, not in the brief, kept on by default.**
   `embed_query` prepends `EMBED_QUERY_PREFIX`
   (default `"Represent this sentence for searching relevant passages: "`);
   `embed_documents` embeds raw. `""` disables.
-- `EMBED_DIM` must equal `model.get_sentence_embedding_dimension()` — checked at
-  startup in both processes.
-- Fake embedder for CI (`app/embed/fake.py`): token hash → seeded RNG → 384
-  floats → normalized. Deterministic, fast, non-degenerate cosine separation.
+- `FakeEmbedder` (`app/embed/fake.py`) — feature-hashing bag of words →
+  L2-normalized. Deterministic, offline, no model file; lexical overlap ⇒ higher
+  cosine. The default test tier uses it; `count_tokens` is a word/punct count.
+  `tests/test_embed_bge.py` covers the real model under `-m local_llm`.
 
 ---
 
