@@ -76,8 +76,8 @@ a matching ARCHITECTURE edit. (`IR_VERSION = 3` — `embeddable` @ v2, `flag` @ 
 3. parsers — pdf, docx, pptx, spreadsheet, text (txt/md), html — **all done**
 4. chunk + embed — `app/chunk/chunker.py`, `app/embed/{base,bge,fake}.py` — **done**
 5. FAISS store — `app/index/store.py` + `app/retrieval/filters.py` wired — **done**
-6. query (`app/query/`, `app/llm/`)  ← next
-7. `make seed` + tests
+6. query — `app/llm/{base,ollama,fake}.py`, `app/query/{pipeline,prompt,context}.py` — **done**
+7. `app/api/`, `app/worker.py`, `app/cli.py` (`seed`), `Makefile`, end-to-end smoke  ← next
 
 Small commits, one concern each. Tests alongside the code.
 

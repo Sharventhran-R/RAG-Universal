@@ -35,10 +35,11 @@ tests. See the status table below for exactly what is and isn't there.
 | **Chunking** | `app/chunk/chunker.py` | ✅ structure-aware sliding window → `ChunkDraft`; block-boundary atomicity, heading seating, overlap carry, `embeddable=False` passthrough, prefix truncation |
 | **Embeddings** | `app/embed/` | ✅ `Embedder` protocol, `FakeEmbedder` (offline hash), `BgeEmbedder` (lazy sentence-transformers) |
 | **FAISS store** | `app/index/store.py` | ✅ `SessionIndex` (per-session `IndexIDMap2/FlatIP`, lock, atomic persist), `IndexStore` (LRU), `verify_index_dimensions` startup guard |
-| **Query loop** | `app/query/`, `app/llm/` | ❌ not started ← **next** |
-| **Ingest worker** | `app/worker.py` | ❌ not started |
-| **HTTP API** | `app/api/` | ❌ not started |
-| **`seed` command** | `app/cli.py` | ❌ not started |
+| **LLM boundary** | `app/llm/` | ✅ `LLMClient` protocol, `OllamaClient` (`/api/chat`, failures → `LLMUnavailable`), `FakeLLM` (scriptable) |
+| **Query pipeline** | `app/query/` | ✅ `answer_query` — embed → retrieve → fenced context → grounded prompt → sentinel handling → citation validation (drop invented / strict-fallback / flag) → resolved citations |
+| **Ingest worker** | `app/worker.py` | ❌ not started ← **next** |
+| **HTTP API** | `app/api/` | ❌ not started ← **next** |
+| **`seed` command** | `app/cli.py` | ❌ not started ← **next** |
 
 Legend: ✅ done + tested · ⏳ interface only · ❌ not started
 
@@ -57,7 +58,7 @@ python -m venv .venv
 Everything that currently has code and tests needs only this subset:
 
 ```bash
-pip install pytest pydantic pydantic-settings numpy "faiss-cpu>=1.7.4" \
+pip install pytest pytest-asyncio pydantic pydantic-settings numpy "faiss-cpu>=1.7.4" httpx \
             pymupdf python-docx python-pptx pandas openpyxl \
             markdown-it-py selectolax
 ```
@@ -81,9 +82,10 @@ own SQLite file under a temp dir, and `app/config.py` has working defaults.
 pytest -q
 ```
 
-Expected: **131 passed, 1 skipped**, in a few seconds, fully offline (no model
+Expected: **151 passed, 1 skipped**, in a few seconds, fully offline (no model
 downloads, no Ollama, no network). The skip is `tests/test_embed_bge.py`
-(`-m local_llm` — real bge model).
+(`-m local_llm` — real bge model). The Ollama client is tested offline with
+`httpx.MockTransport`.
 
 Useful variants:
 
@@ -120,6 +122,10 @@ Ollama) and currently selects nothing.
 | `tests/test_embed_bge.py` | *(skipped unless `-m local_llm`)* real bge dim/normalization, asymmetric query prefix, monotonic token count |
 | `tests/test_index_store.py` | add/search ranks by cosine + normalizes inputs, search is a **real pre-filter** (excluded id never scored), atomic persist survives reload, `remove` + unknown ids, `IndexDimMismatch` on load and via `verify_index_dimensions` (names the file), LRU evict-and-persist |
 | `tests/test_retrieval_filters.py` | session isolation in the resolver, only `ready`+`embedded` chunks eligible, `file_type`/`filename`/`document_ids`(+empty)/`uploaded_before`/`uploaded_after` filters, `retrieve` ranks by similarity within the filtered set, `top_k` applied to the filtered set, `index=None` → `[]` |
+| `tests/test_llm_fake.py` | protocol conformance, records calls, string / callable / default-heuristic responses |
+| `tests/test_llm_ollama.py` | *(offline, `httpx.MockTransport`)* `/api/chat` payload shape, message parsing, `stop` forwarding, every failure mode → `LLMUnavailable`, `.ping()` |
+| `tests/test_query_context.py` | `format_locator` per axis, `[id \| file \| loc]` header, context layout, snippet truncation |
+| `tests/test_query_pipeline.py` | grounded answer keeps + resolves a valid citation, sentinel → insufficient, no hits → insufficient without a model call, invented-only citation (strict → fallback, flag → answer+warning with ids stripped), mixed citations keep only the valid one, blank question, context is fenced + labelled + system says "untrusted" |
 
 ---
 
@@ -177,6 +183,8 @@ app/
   embed/                base.py (protocol) + bge.py (real, lazy) + fake.py (CI)
   index/store.py        SessionIndex + IndexStore (LRU) + verify_index_dimensions
   retrieval/filters.py  metadata-filter chokepoint (wired)
+  llm/                  base.py (protocol) + ollama.py (real) + fake.py (CI)
+  query/                pipeline.py (answer_query) + prompt.py + context.py
 docs/ARCHITECTURE.md    the contract — read this first
 CLAUDE.md               invariants + how to add a parser
 tests/
