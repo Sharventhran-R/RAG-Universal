@@ -19,7 +19,9 @@ from typing import Optional
 
 from app.config import get_settings
 
-_HEADER_RE = re.compile(r"\[([A-Za-z0-9_-]+) \|")
+# A real context header: [c_<hex> | filename | location]. The `c_` prefix keeps
+# this from matching the "[<chunk_id> | ...]" schema line in the prompt.
+_HEADER_RE = re.compile(r"\[(c_\w+) \|")
 
 
 class FakeLLM:

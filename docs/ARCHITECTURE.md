@@ -53,7 +53,7 @@ app/
   parsers/
     base.py                # Parser protocol + ParserRegistry            (done)
     pdf.py docx.py pptx.py spreadsheet.py text.py html.py
-  extract/                 # extraction cache, id assignment, orchestration
+  extract/                 # cache.py + extractor.py -- parser dispatch, cache-backed
   chunk/                   # chunker.py -- structure-aware sliding window -> ChunkDraft
   embed/                   # base.py (Embedder) + bge.py (real, lazy) + fake.py (CI)
   index/                   # store.py -- SessionIndex + IndexStore + verify_index_dimensions
@@ -61,11 +61,12 @@ app/
     filters.py             # ChunkFilter + resolve_allowed_ids + search + retrieve  (done)
   llm/                     # base.py (LLMClient) + ollama.py (real) + fake.py (CI)
   query/                   # pipeline.py (answer_query) + prompt.py + context.py
-  worker.py                # ingestion worker process: claim job -> run pipeline
-  api/                     # routers: sessions, documents, query (enqueue only)
+  ingest/                  # pipeline.py (process_document) + reconcile.py
+  worker.py                # ingestion daemon: claim job -> process_document -> sleep
+  api/                     # app.py (create_app) + routes.py + schemas.py
   cli.py                   # `seed`
 docs/ARCHITECTURE.md
-fixtures/                  # one pdf, one xlsx, one docx (added with `make seed`)
+fixtures/build_fixtures.py # generates one pdf, one xlsx, one docx
 tests/
 Makefile
 ```
@@ -256,13 +257,32 @@ then returns.
 
 ### Extraction cache
 
-Keyed by `(file_sha256, extractor_version)` plus `IR_VERSION`. Stored as JSON at
-`{DATA_DIR}/extractions/{sha256}/{extractor_version}.json`. Hit → load,
-`block_from_dict`, skip to chunking. Bump `Parser.version` on any output change.
-Re-chunking never re-parses.
+`app/extract/` — `extractor.py` resolves the parser and calls `cache.py`.
+Keyed by `(file_sha256, extractor_version)` plus `IR_VERSION`, stored as JSON at
+`{DATA_DIR}/extractions/{sha256}/{extractor_version}.json`. Hit → reconstruct
+the `ParseResult` (blocks + flags + status_hint), **skip the parser entirely**.
+Bump `Parser.version` on any output change; re-chunking never re-parses.
 
 Uploaded originals are kept at `{DATA_DIR}/blobs/{session_id}/{sha256}` for
 re-extraction; removed when the document is deleted.
+
+### The pipeline
+
+`app/ingest/pipeline.py::process_document(conn, job, *, paths, embedder,
+index_store, settings)` runs one job to a terminal status and marks the job
+done/failed:
+
+- `UnsupportedFormatError` from the registry → `unsupported`, job done.
+- `status_hint == EMPTY_NO_TEXT` **or** zero blocks → `empty_no_text`, job done.
+- otherwise: `replace_chunks` (in a txn) → remove the document's prior vectors
+  from the session index → embed the `embedded=1` chunks → `index.add` →
+  `index.persist()` → counts → `ready`, job done.
+- any exception → `failed` (traceback on `documents.error`), `fail_job` requeues
+  it for another attempt (up to `INGEST_MAX_ATTEMPTS`).
+
+Every step is idempotent, so a job re-run after a crash converges.
+`app/ingest/reconcile.py::reconcile` runs once at worker startup and drops
+`embedded=1` chunk rows whose `faiss_id` is missing from the session index.
 
 ---
 
@@ -359,7 +379,7 @@ no-op). Current `SCHEMA_VERSION = 2` (v2 added `documents.extraction_flags`).
 
 `chunks.faiss_id` is `INTEGER PRIMARY KEY AUTOINCREMENT` — globally monotonic,
 never reused. Only chunks with `embedded = 1` are `add_with_ids`'d into their
-session index. The `IDSelectorArray` pre-filter (§9) operates on these ids.
+session index. The `IDSelectorBatch` pre-filter (§9) operates on these ids.
 
 ### FAISS layout
 
@@ -423,7 +443,7 @@ Hybrid/BM25 and reranking are out of scope. The seam is `retrieve()`.
 ## 10. Query endpoint
 
 `app/query/pipeline.py::answer_query(req, *, conn, index, embedder, llm, settings)`
-— an `async` straight line, no tool loop. The FastAPI route (slice 7) is a thin
+— an `async` straight line, no tool loop. `app/api/routes.py::query` is a thin
 wrapper that builds `QueryRequest`, calls it, and maps `LLMUnavailable` → 503.
 `POST /sessions/{id}/query` → `{answer, citations[], chunks_used[], …}`.
 
@@ -521,26 +541,35 @@ class LLMClient(Protocol):
 
 ## 13. Endpoints
 
+`app/api/` — `create_app(*, settings, embedder, llm, index_store)` (tests pass
+fakes); lifespan runs `init_db` + `verify_index_dimensions` + a non-fatal Ollama
+ping. Per-request SQLite connection via a dependency; the embedder / llm /
+index store are singletons on `app.state`. **The API never ingests** — upload
+just writes the blob, inserts the `documents` row (`queued`), and enqueues an
+`ingest_jobs` row.
+
 ```
-POST   /sessions                      -> {id, name, created_at}
-GET    /sessions/{id}                 -> session + document summaries
-POST   /sessions/{id}/documents       -> multipart; {document_id, job: {status}}
-GET    /documents/{id}                -> document + status (poll here)
-DELETE /documents/{id}                -> removes FAISS ids + SQLite rows + blob
-POST   /sessions/{id}/query           -> §10
+POST   /sessions                      -> 201 {id, name, created_at}
+GET    /sessions/{id}                 -> session + document summaries   (404 if missing)
+POST   /sessions/{id}/documents       -> 202 multipart; {document_id, job:{id,status}}
+GET    /documents/{id}                -> document + status (poll here)  (404 if missing)
+DELETE /documents/{id}                -> 204; removes FAISS ids + SQLite rows + blob
+POST   /sessions/{id}/query           -> §10; LLMUnavailable -> 503
 ```
 
 ### Delete — flagged: FAISS and SQLite can't share a transaction
 
-"Atomically" is **crash-consistent ordering + startup reconcile**:
+`app/api/routes.py::delete_document`. "Atomically" is **crash-consistent
+ordering + startup reconcile**:
 
-1. `SELECT faiss_id FROM chunks WHERE session_id = ? AND document_id = ? AND embedded = 1`
-   (every chunk-read query in `app/db/repo.py` takes `session_id` positionally —
-   citation resolution and counts included, not just the retrieval chokepoint).
-2. `index.remove_ids(faiss.IDSelectorArray(ids))` under the session index lock.
-3. Persist the index (temp file → fsync → atomic rename).
-4. SQLite: `DELETE FROM chunks …; DELETE FROM documents …;` delete the blob;
-   `COMMIT`.
+1. `repo.document_faiss_ids(conn, session_id, document_id)` — every chunk-read
+   query in `app/db/repo.py` takes `session_id` positionally (citation
+   resolution and counts included, not just the retrieval chokepoint).
+2. `SessionIndex.remove(faiss_ids)` (builds `faiss.IDSelectorBatch`) under the
+   session index lock.
+3. `SessionIndex.persist()` (temp file → fsync → atomic rename).
+4. `with transaction(conn): repo.delete_document_rows(session_id, document_id)`
+   (chunks + jobs + document, all session-scoped), then `blob.unlink(missing_ok=True)`.
 
 Vectors go before metadata, so a crash between 3 and 4 leaves at worst orphaned
 `chunks` rows with no vector — unretrievable. Startup reconcile: per session,
@@ -593,20 +622,23 @@ step 2 precedes any commit.
 
 ## 16. Testing
 
-- **CI tier (`pytest`)** — fake embedder + fake LLM. No downloads, no Ollama,
-  milliseconds. Covers: IR round-trip, parser registry + `unsupported`, chunk
-  boundary rules + prefix truncation, `embeddable=False` chunks get no vector,
-  faiss_id allocation, the filter chokepoint (incl. `allowed_ids == []`), delete
-  removes vectors, citation validation drops invented ids, session isolation,
-  the SQLite claim protocol (two workers never double-claim; stale reap works).
-- **Local-LLM tier (`pytest -m local_llm`)** — real bge + real Ollama; runs the
-  `make seed` corpus and the smoke test.
-- **`make seed`** — starts a worker, ingests `./fixtures` (one pdf, one xlsx,
-  one docx), waits for all `ready`, prints document + chunk counts.
-- **Smoke test** — (a) a plain query returns an answer with ≥1 resolvable
-  citation; (b) a `file_type=xlsx` filtered query only cites the spreadsheet and
-  cites its **summary** block, never a row-window; (c) a deleted document's
-  content is unreachable afterwards.
+- **CI tier (`pytest`)** — fake embedder + fake LLM + `httpx.MockTransport`. No
+  downloads, no Ollama, no network; seconds. ~173 tests. Covers every module:
+  IR round-trip, parser registry + `unsupported`/`empty_no_text`, chunk boundary
+  rules + prefix truncation, `embeddable=False` chunks get no vector, faiss_id
+  allocation, the filter chokepoint (incl. `allowed_ids == []`), delete removes
+  vectors, citation validation drops invented ids, session isolation, the SQLite
+  claim protocol (8 threads never double-claim; stale reap), the extraction
+  cache (hit works with the blob deleted), `process_document`'s full status
+  machine, `reconcile`, and all six HTTP endpoints via `TestClient`.
+- **Local-LLM tier (`pytest -m local_llm`)** — real bge + real Ollama.
+- **`tests/test_smoke.py`** — builds `./fixtures`, ingests all three through
+  `process_document`, then: (a) a pure-semantic query returns a grounded answer
+  with a resolvable citation; (b) a `file_type=xlsx` query only cites the
+  spreadsheet (its embeddable summary block); (c) after `DELETE`, the document's
+  content is unretrievable.
+- **`make seed`** (`python -m app.cli seed [--fake]`) — build `./fixtures`,
+  drain the queue in-process, print the catalog.
 
 ---
 

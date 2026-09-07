@@ -20,3 +20,9 @@ venv/
 
 # models cache (sentence-transformers / HF)
 .cache/
+
+# generated demo corpus (built by fixtures/build_fixtures.py)
+/fixtures/*.pdf
+/fixtures/*.xlsx
+/fixtures/*.docx
+/fixtures/*.pptx

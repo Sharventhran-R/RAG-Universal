@@ -9,10 +9,11 @@ citations.
 - **Design contract:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - **Working rules / invariants:** [CLAUDE.md](CLAUDE.md)
 
-This is **Phase 1, built in slices, pre-release.** The HTTP API and the worker
-process do not exist yet — there is nothing to `uvicorn` or `curl`. What exists
-is the IR contract, the storage layer, and four of the six parsers, each with
-tests. See the status table below for exactly what is and isn't there.
+**Phase 1 is feature-complete.** Two processes — the **API**
+(`uvicorn app.api:app`) serves requests and enqueues ingest jobs; the **worker**
+(`python -m app.worker`) claims jobs from SQLite and runs
+extract→chunk→embed→index. All six endpoints, six parsers, the query pipeline,
+`make seed`, and an end-to-end smoke test are in place and tested offline.
 
 ---
 
@@ -37,11 +38,13 @@ tests. See the status table below for exactly what is and isn't there.
 | **FAISS store** | `app/index/store.py` | ✅ `SessionIndex` (per-session `IndexIDMap2/FlatIP`, lock, atomic persist), `IndexStore` (LRU), `verify_index_dimensions` startup guard |
 | **LLM boundary** | `app/llm/` | ✅ `LLMClient` protocol, `OllamaClient` (`/api/chat`, failures → `LLMUnavailable`), `FakeLLM` (scriptable) |
 | **Query pipeline** | `app/query/` | ✅ `answer_query` — embed → retrieve → fenced context → grounded prompt → sentinel handling → citation validation (drop invented / strict-fallback / flag) → resolved citations |
-| **Ingest worker** | `app/worker.py` | ❌ not started ← **next** |
-| **HTTP API** | `app/api/` | ❌ not started ← **next** |
-| **`seed` command** | `app/cli.py` | ❌ not started ← **next** |
+| **Extraction cache** | `app/extract/` | ✅ parser dispatch + JSON cache keyed by `(sha256, extractor_version)` + `IR_VERSION`; cache hit skips the parser |
+| **Ingest pipeline** | `app/ingest/` | ✅ `process_document` (status machine, `unsupported`/`empty_no_text`/`failed`, idempotent re-ingest), `reconcile` (drop orphan chunk rows at startup) |
+| **Ingest worker** | `app/worker.py` | ✅ claim-loop daemon + `drain()` for `seed`/tests; startup reconcile + dim check; SIGINT/SIGTERM clean stop |
+| **HTTP API** | `app/api/` | ✅ all six endpoints; `create_app(...)` injects fakes for tests; lifespan runs `init_db` + dim check + Ollama ping; `LLMUnavailable` → 503 |
+| **`seed` command** | `app/cli.py` | ✅ `python -m app.cli seed [--fake]` — builds `./fixtures`, drains the queue, prints the catalog |
 
-Legend: ✅ done + tested · ⏳ interface only · ❌ not started
+Legend: ✅ done + tested
 
 ---
 
@@ -55,17 +58,19 @@ python -m venv .venv
 # POSIX:    source .venv/bin/activate
 ```
 
-Everything that currently has code and tests needs only this subset:
+Everything with code and tests — the whole offline CI tier, including the API
+and worker — needs only this subset:
 
 ```bash
-pip install pytest pytest-asyncio pydantic pydantic-settings numpy "faiss-cpu>=1.7.4" httpx \
+pip install pytest pytest-asyncio pydantic pydantic-settings numpy "faiss-cpu>=1.7.4" \
+            httpx fastapi python-multipart \
             pymupdf python-docx python-pptx pandas openpyxl \
             markdown-it-py selectolax
 ```
 
-The full dependency set (adds `faiss-cpu`, `sentence-transformers` → torch, and
-the FastAPI stack — none of it exercised yet) is declared in
-[pyproject.toml](pyproject.toml):
+`sentence-transformers` (→ torch) is needed only for the *real* embedder —
+`make seed` without `--fake`, `pytest -m local_llm`, and a production API/worker.
+The full set is declared in [pyproject.toml](pyproject.toml):
 
 ```bash
 pip install -e ".[dev]"
@@ -82,25 +87,23 @@ own SQLite file under a temp dir, and `app/config.py` has working defaults.
 pytest -q
 ```
 
-Expected: **151 passed, 1 skipped**, in a few seconds, fully offline (no model
+Expected: **173 passed, 1 skipped**, in a few seconds, fully offline (no model
 downloads, no Ollama, no network). The skip is `tests/test_embed_bge.py`
-(`-m local_llm` — real bge model). The Ollama client is tested offline with
-`httpx.MockTransport`.
+(`-m local_llm` — real bge model). The Ollama client and the whole HTTP API are
+tested offline (`httpx.MockTransport`, `FakeEmbedder`, `FakeLLM`).
 
 Useful variants:
 
 ```bash
-pytest -q tests/test_parser_spreadsheet.py     # one file
+pytest -q tests/test_smoke.py                   # end-to-end: ingest ./fixtures + 3 query shapes
+pytest -q tests/test_api.py                     # the six endpoints via TestClient
 pytest -q -k claim                              # the SQLite queue claim protocol
-pytest -q -k "verdict or flag"                  # the table judgment-call signal
 pytest -q -rs                                   # show why anything skipped
 ```
 
-Parser test files call `pytest.importorskip(...)`, so if you skip installing
-e.g. `python-pptx`, `tests/test_parser_pptx.py` **skips** rather than fails.
-
-`pytest -m local_llm` is reserved for a later slice (real bge model + a running
-Ollama) and currently selects nothing.
+Test files call `pytest.importorskip(...)`, so a missing optional library
+(`python-pptx`, `faiss`, `fastapi`, …) **skips** the affected file rather than
+failing. `pytest -m local_llm` needs the real bge model + a running Ollama.
 
 ### What the suite covers today
 
@@ -126,45 +129,54 @@ Ollama) and currently selects nothing.
 | `tests/test_llm_ollama.py` | *(offline, `httpx.MockTransport`)* `/api/chat` payload shape, message parsing, `stop` forwarding, every failure mode → `LLMUnavailable`, `.ping()` |
 | `tests/test_query_context.py` | `format_locator` per axis, `[id \| file \| loc]` header, context layout, snippet truncation |
 | `tests/test_query_pipeline.py` | grounded answer keeps + resolves a valid citation, sentinel → insufficient, no hits → insufficient without a model call, invented-only citation (strict → fallback, flag → answer+warning with ids stripped), mixed citations keep only the valid one, blank question, context is fenced + labelled + system says "untrusted" |
+| `tests/test_extract.py` | parse-then-cache, second call is a cache hit (works with the blob deleted), stale `ir_version` ignored, flags/hint round-trip, `UnsupportedFormatError` |
+| `tests/test_ingest_pipeline.py` | text doc → `ready` with a vector, unknown type → `unsupported` (not `failed`), scanned PDF → `empty_no_text`, missing blob → `failed` + job requeued, re-ingest replaces vectors (no duplication), `extraction_flags` persist to the row, `reconcile` drops orphan chunk rows |
+| `tests/test_api.py` | session CRUD + 404s, upload → 202/`queued`, query before ingest → insufficient, upload to missing session → 404, empty upload → 400, full upload→drain→query→cite, delete → 204 → unretrievable, `file_type` filter through the endpoint |
+| `tests/test_smoke.py` | build `./fixtures`, ingest all three via the pipeline, then: pure-semantic query is grounded + cited, `file_type=xlsx` query only cites the spreadsheet, deleting a doc makes its content unretrievable |
 
 ---
 
-## Trying a parser by hand
+## Run the app
 
-There is no app to run, but a parser is just a function from bytes to a
-`ParseResult`:
+Two processes plus the local models. First pull the LLM once:
 
-```python
-import io
-from pathlib import Path
-from app.parsers.base import ParseInput
-from app.parsers.pdf import PdfParser
-
-data = Path("some.pdf").read_bytes()
-src = ParseInput(
-    document_id="d1",
-    filename="some.pdf",
-    mimetype="application/pdf",
-    file_sha256="deadbeef",
-    extractor_version=PdfParser.version,
-    open_stream=lambda: io.BytesIO(data),
-    local_path=lambda: Path("some.pdf"),
-)
-
-result = PdfParser().parse(src)
-print("flags:", result.extraction_flags, "hint:", result.status_hint)
-for b in result.blocks:
-    print(f"{b.order:3} {b.type:10} p{b.locator.page} {b.section_path} {b.content[:60]!r}")
+```bash
+ollama serve
+ollama pull llama3.1:8b
 ```
 
-Swap `PdfParser` for `DocxParser`, `PptxParser`, `XlsxParser`, or `CsvParser`
-(from `app.parsers.docx` / `.pptx` / `.spreadsheet`) — or let the registry pick:
+Then:
 
-```python
-from app.parsers.base import registry
-import app.parsers  # registers all built parsers
+```bash
+uvicorn app.api:app --reload        # terminal 1 — HTTP API on :8000
+python -m app.worker                 # terminal 2 — ingestion (run one or more)
+```
 
-parser = registry.resolve("application/pdf", "some.pdf")
+Drive it:
+
+```bash
+SID=$(curl -sX POST localhost:8000/sessions -H 'content-type: application/json' \
+        -d '{"name":"demo"}' | python -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+
+curl -sX POST localhost:8000/sessions/$SID/documents -F file=@report.pdf      # -> {document_id, job}
+curl -s  localhost:8000/documents/<document_id>                              # poll until "ready"
+
+curl -sX POST localhost:8000/sessions/$SID/query -H 'content-type: application/json' \
+     -d '{"question":"what was revenue in 2025?", "file_type":"pdf"}'
+```
+
+`make seed` (or `python -m app.cli seed`) ingests `./fixtures` end-to-end in one
+process and prints the catalog — add `--fake` to skip the model download.
+
+```
+$ python -m app.cli seed --fake
+session sess_…
+ingested 3 document(s):
+
+  filename               type   status         blocks  chunks  flags
+  handbook.pdf           pdf    ready               6       2  -
+  sales.xlsx             xlsx   ready               2       1  -
+  notes.docx             docx   ready               4       2  -
 ```
 
 ---
@@ -185,6 +197,13 @@ app/
   retrieval/filters.py  metadata-filter chokepoint (wired)
   llm/                  base.py (protocol) + ollama.py (real) + fake.py (CI)
   query/                pipeline.py (answer_query) + prompt.py + context.py
+  extract/              cache.py + extractor.py  (parser dispatch, cache-backed)
+  ingest/               pipeline.py (process_document) + reconcile.py
+  worker.py             the ingestion daemon  (python -m app.worker)
+  api/                  app.py (create_app) + routes.py + schemas.py
+  cli.py                `seed`
+fixtures/build_fixtures.py   generates the demo corpus (pdf/xlsx/docx)
+Makefile                test / seed / api / worker
 docs/ARCHITECTURE.md    the contract — read this first
 CLAUDE.md               invariants + how to add a parser
 tests/

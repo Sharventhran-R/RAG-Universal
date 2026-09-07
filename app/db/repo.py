@@ -119,13 +119,27 @@ def set_document_status(
 
 
 def set_document_extractor(
-    conn: sqlite3.Connection, document_id: str, name: str, version: str
+    conn: sqlite3.Connection,
+    document_id: str,
+    name: str,
+    version: str,
+    file_type: str | None = None,
 ) -> None:
+    """Record which parser handled the document. ``file_type`` is the parser's
+    authoritative short tag (the upload only had an extension guess)."""
     with transaction(conn):
-        conn.execute(
-            "UPDATE documents SET extractor_name = ?, extractor_version = ?, updated_at = ? WHERE id = ?",
-            (name, version, now_iso(), document_id),
-        )
+        if file_type is None:
+            conn.execute(
+                "UPDATE documents SET extractor_name = ?, extractor_version = ?, "
+                "updated_at = ? WHERE id = ?",
+                (name, version, now_iso(), document_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE documents SET extractor_name = ?, extractor_version = ?, "
+                "file_type = ?, updated_at = ? WHERE id = ?",
+                (name, version, file_type, now_iso(), document_id),
+            )
 
 
 def set_document_counts(

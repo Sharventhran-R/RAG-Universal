@@ -77,9 +77,10 @@ a matching ARCHITECTURE edit. (`IR_VERSION = 3` — `embeddable` @ v2, `flag` @ 
 4. chunk + embed — `app/chunk/chunker.py`, `app/embed/{base,bge,fake}.py` — **done**
 5. FAISS store — `app/index/store.py` + `app/retrieval/filters.py` wired — **done**
 6. query — `app/llm/{base,ollama,fake}.py`, `app/query/{pipeline,prompt,context}.py` — **done**
-7. `app/api/`, `app/worker.py`, `app/cli.py` (`seed`), `Makefile`, end-to-end smoke  ← next
+7. `app/extract/`, `app/ingest/`, `app/worker.py`, `app/api/`, `app/cli.py`, `Makefile`, end-to-end smoke — **done**
 
-Small commits, one concern each. Tests alongside the code.
+**Phase 1 is feature-complete.** ~173 offline tests. Small commits, one concern
+each. Tests alongside the code.
 
 ## Adding a parser
 

@@ -36,6 +36,11 @@ packages = ["app"]
 [tool.pytest.ini_options]
 markers = ["local_llm: exercises the real bge model and a running Ollama"]
 asyncio_mode = "auto"
+filterwarnings = [
+    # third-party noise from starlette's TestClient / anyio
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore:.*httpx.*starlette.testclient.*:Warning",
+]
 
 [tool.ruff]
 target-version = "py311"
