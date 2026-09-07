@@ -75,8 +75,8 @@ a matching ARCHITECTURE edit. (`IR_VERSION = 3` — `embeddable` @ v2, `flag` @ 
 2. storage/models (`app/db/`, `app/paths.py`, `app/config.py`)
 3. parsers — pdf, docx, pptx, spreadsheet, text (txt/md), html — **all done**
 4. chunk + embed — `app/chunk/chunker.py`, `app/embed/{base,bge,fake}.py` — **done**
-5. FAISS store (`app/index/`)  ← next
-6. query (`app/query/`, `app/llm/`)
+5. FAISS store — `app/index/store.py` + `app/retrieval/filters.py` wired — **done**
+6. query (`app/query/`, `app/llm/`)  ← next
 7. `make seed` + tests
 
 Small commits, one concern each. Tests alongside the code.

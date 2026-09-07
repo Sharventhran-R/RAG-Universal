@@ -56,6 +56,7 @@ app/
   extract/                 # extraction cache, id assignment, orchestration
   chunk/                   # chunker.py -- structure-aware sliding window -> ChunkDraft
   embed/                   # base.py (Embedder) + bge.py (real, lazy) + fake.py (CI)
+  index/                   # store.py -- SessionIndex + IndexStore + verify_index_dimensions
   index/                   # FAISS store: open/create/persist/add/remove, per-session lock
   retrieval/
     filters.py             # ChunkFilter + resolve_allowed_ids + search + retrieve  (done)
@@ -363,12 +364,25 @@ session index. The `IDSelectorArray` pre-filter (§9) operates on these ids.
 
 ### FAISS layout
 
-`{DATA_DIR}/faiss/{session_id}.index`, written via `faiss.write_index` to a temp
-file, `fsync`, then atomic rename. Created empty on a session's first embedded
-chunk: `faiss.IndexIDMap2(faiss.IndexFlatIP(EMBED_DIM))`.
+`app/index/`. `SessionIndex` wraps one session's
+`faiss.IndexIDMap2(faiss.IndexFlatIP(EMBED_DIM))` plus a `threading.Lock`;
+`IndexStore` is an LRU cache of them (`INDEX_CACHE_SIZE`), persisting on evict.
 
-Vectors are **L2-normalized before add and before search** — inner product on
-normalized vectors is cosine. Hard rule.
+`{DATA_DIR}/faiss/{session_id}.index` — `faiss.write_index` to a temp file in
+`{DATA_DIR}/tmp`, best-effort `fsync`, then `os.replace` (atomic). The index
+file is created lazily (first `get_or_create`); `IndexStore.get` returns `None`
+for a session that has never held a vector.
+
+Vectors are **L2-normalized before add and before search** (`faiss.normalize_L2`)
+— inner product on normalized vectors is cosine. Hard rule.
+
+Re-embed: the worker calls `repo.document_faiss_ids(conn, session_id,
+document_id)` for the doc's current ids, `SessionIndex.remove(...)` them, then
+`replace_chunks` + `SessionIndex.add(new_ids, vectors)` + `persist` once.
+
+`verify_index_dimensions(paths, EMBED_DIM)` (startup, both processes) reads each
+`*.index` and raises `IndexDimMismatch` if any `.d` differs — the load-bearing
+`EMBED_DIM` check from §2. `SessionIndex` re-checks on every load.
 
 ---
 
@@ -383,22 +397,25 @@ pre-filter — never top-k-then-post-filter.
    `WHERE chunks.session_id = ? AND chunks.embedded = 1 AND documents.status = 'ready'`
    plus optional `file_type`, `filename`, `created_at >/<`, `document_id IN (...)`.
    Returns the sorted `list[int]` of allowed `faiss_id`s.
-2. `search(index, query_vector, allowed_ids, top_k)` → wraps the ids in
-   `faiss.IDSelectorArray`, sets `faiss.SearchParameters.sel`, calls
-   `index.search(x, top_k, params=params)`. Candidates outside the set are never
-   scored.
+2. `search(index: SessionIndex | None, query_vector, allowed_ids, top_k)` →
+   delegates to `SessionIndex.search`, which builds `faiss.IDSelectorBatch`
+   (O(1) membership) into `faiss.SearchParameters.sel` and calls
+   `index.search(x, k, params=params)` under the session lock. Candidates
+   outside the set are never scored. `index is None` (session never had a
+   vector) or `allowed_ids == []` → `[]` without touching FAISS.
 3. `retrieve(...)` is the only function endpoints/query code call. It chains 1→2.
 
 **Rules:**
 
 - `session_id` is mandatory on `ChunkFilter` and always in the SQL. **Session
-  isolation is enforced only here.**
+  isolation is enforced only here.** `ChunkFilter` datetimes are treated as UTC.
 - `allowed_ids == []` → return `[]`. Never fall back to an unfiltered search.
 - Supported filters: `session_id` (always), `file_type`, `filename`,
-  `uploaded_after`, `uploaded_before`, `document_ids`.
-- The numpy buffer behind `IDSelectorArray` must outlive the `search` call
-  (FAISS holds it by pointer).
-- Requires `faiss-cpu >= 1.7.4`.
+  `uploaded_after`, `uploaded_before`, `document_ids` (empty list ⇒ `[]`).
+- The numpy id buffer behind the selector must outlive the `search` call
+  (FAISS holds it by pointer) — `SessionIndex.search` keeps a local reference.
+- Requires `faiss-cpu >= 1.7.4`. Vectors are L2-normalized on add and on query
+  (`faiss.normalize_L2`), so the inner-product score is cosine, ≤ 1.
 
 Hybrid/BM25 and reranking are out of scope. The seam is `retrieve()`.
 

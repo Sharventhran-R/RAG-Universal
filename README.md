@@ -22,7 +22,7 @@ tests. See the status table below for exactly what is and isn't there.
 |---|---|---|
 | **IR contract** | `app/ir.py` | ✅ `Block` / `Locator` / `ParseResult`, deterministic block ids, JSON round-trip (`IR_VERSION = 3`) |
 | **Parser interface + registry** | `app/parsers/base.py`, `app/parsers/_common.py` | ✅ mimetype dispatch + extension fallback, `UnsupportedFormatError`, shared `SectionPath` / `PlainText` / `BlockBuilder` / `table_verdict` / `rows_to_markdown` |
-| **Retrieval chokepoint** | `app/retrieval/filters.py` | ⏳ signatures only (`ChunkFilter`, `resolve_allowed_ids`, `search`, `retrieve`) — bodies raise `NotImplementedError` |
+| **Retrieval chokepoint** | `app/retrieval/filters.py` | ✅ `resolve_allowed_ids` (session-scoped SQL) → `search` (FAISS `IDSelectorBatch` pre-filter) → `retrieve`; empty-set and `index=None` short-circuits |
 | **Config** | `app/config.py` | ✅ every knob, env + `.env`, coherence validation |
 | **On-disk layout** | `app/paths.py` | ✅ `DataPaths`, atomic writes |
 | **SQLite storage** | `app/db/` | ✅ schema (`SCHEMA_VERSION = 2`), forward migrations, connection pragmas, row models, data access incl. the **SQLite-as-queue claim protocol** |
@@ -34,8 +34,8 @@ tests. See the status table below for exactly what is and isn't there.
 | **Parser: HTML** | `app/parsers/html.py` | ✅ selectolax — strips script/style/nav, `<title>` root, container recursion, table gate |
 | **Chunking** | `app/chunk/chunker.py` | ✅ structure-aware sliding window → `ChunkDraft`; block-boundary atomicity, heading seating, overlap carry, `embeddable=False` passthrough, prefix truncation |
 | **Embeddings** | `app/embed/` | ✅ `Embedder` protocol, `FakeEmbedder` (offline hash), `BgeEmbedder` (lazy sentence-transformers) |
-| **FAISS store** | `app/index/` | ❌ not started ← **next** |
-| **Query loop** | `app/query/`, `app/llm/` | ❌ not started |
+| **FAISS store** | `app/index/store.py` | ✅ `SessionIndex` (per-session `IndexIDMap2/FlatIP`, lock, atomic persist), `IndexStore` (LRU), `verify_index_dimensions` startup guard |
+| **Query loop** | `app/query/`, `app/llm/` | ❌ not started ← **next** |
 | **Ingest worker** | `app/worker.py` | ❌ not started |
 | **HTTP API** | `app/api/` | ❌ not started |
 | **`seed` command** | `app/cli.py` | ❌ not started |
@@ -57,7 +57,7 @@ python -m venv .venv
 Everything that currently has code and tests needs only this subset:
 
 ```bash
-pip install pytest pydantic pydantic-settings numpy \
+pip install pytest pydantic pydantic-settings numpy "faiss-cpu>=1.7.4" \
             pymupdf python-docx python-pptx pandas openpyxl \
             markdown-it-py selectolax
 ```
@@ -81,7 +81,7 @@ own SQLite file under a temp dir, and `app/config.py` has working defaults.
 pytest -q
 ```
 
-Expected: **112 passed, 1 skipped**, in a few seconds, fully offline (no model
+Expected: **131 passed, 1 skipped**, in a few seconds, fully offline (no model
 downloads, no Ollama, no network). The skip is `tests/test_embed_bge.py`
 (`-m local_llm` — real bge model).
 
@@ -118,6 +118,8 @@ Ollama) and currently selects nothing.
 | `tests/test_chunk.py` | sequential `ord`, heading seating, budget flush + overlap carry, table/code atomic & never merged, oversized block kept whole, lone-heading merges into its table, `embeddable=False` → `embedded=0`, chunk locator spans first→last block, prefix = `filename > …last 2 levels`, long-filename middle-elision leaves body intact |
 | `tests/test_embed_fake.py` | protocol conformance, float32 + L2-normalized, deterministic, lexical overlap ranks above unrelated, empty text stays a unit vector, word/punct token count |
 | `tests/test_embed_bge.py` | *(skipped unless `-m local_llm`)* real bge dim/normalization, asymmetric query prefix, monotonic token count |
+| `tests/test_index_store.py` | add/search ranks by cosine + normalizes inputs, search is a **real pre-filter** (excluded id never scored), atomic persist survives reload, `remove` + unknown ids, `IndexDimMismatch` on load and via `verify_index_dimensions` (names the file), LRU evict-and-persist |
+| `tests/test_retrieval_filters.py` | session isolation in the resolver, only `ready`+`embedded` chunks eligible, `file_type`/`filename`/`document_ids`(+empty)/`uploaded_before`/`uploaded_after` filters, `retrieve` ranks by similarity within the filtered set, `top_k` applied to the filtered set, `index=None` → `[]` |
 
 ---
 
@@ -173,7 +175,8 @@ app/
     pdf.py docx.py pptx.py spreadsheet.py text.py html.py
   chunk/chunker.py      structure-aware sliding window -> ChunkDraft
   embed/                base.py (protocol) + bge.py (real, lazy) + fake.py (CI)
-  retrieval/filters.py  metadata-filter chokepoint (signatures)
+  index/store.py        SessionIndex + IndexStore (LRU) + verify_index_dimensions
+  retrieval/filters.py  metadata-filter chokepoint (wired)
 docs/ARCHITECTURE.md    the contract — read this first
 CLAUDE.md               invariants + how to add a parser
 tests/

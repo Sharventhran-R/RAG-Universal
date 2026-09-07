@@ -266,6 +266,22 @@ def count_chunks(
     return conn.execute(sql, (session_id, document_id)).fetchone()[0]
 
 
+def document_faiss_ids(
+    conn: sqlite3.Connection, session_id: str, document_id: str
+) -> list[int]:
+    """The embedded ``faiss_id``s currently belonging to a document -- the
+    worker removes these from the session index before a re-embed, and the
+    DELETE endpoint uses :func:`delete_document_rows` (which returns the same
+    set). ``session_id`` scopes the read, as on every chunk-read path."""
+    rows = conn.execute(
+        "SELECT faiss_id FROM chunks "
+        "WHERE session_id = ? AND document_id = ? AND embedded = 1 "
+        "ORDER BY faiss_id",
+        (session_id, document_id),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 # --------------------------------------------------------------------------
 # ingest_jobs  (SQLite-as-queue -- see ARCHITECTURE section 6)
 # --------------------------------------------------------------------------
