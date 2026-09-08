@@ -47,8 +47,12 @@ def run(*, once: bool = False) -> None:
         nonlocal stopping
         stopping = True
 
-    signal.signal(signal.SIGINT, _stop)
-    signal.signal(signal.SIGTERM, _stop)
+    try:
+        signal.signal(signal.SIGINT, _stop)
+        signal.signal(signal.SIGTERM, _stop)
+    except ValueError:
+        # not the main thread (e.g. embedded in a test harness) -- no signal handlers
+        pass
 
     try:
         while not stopping:

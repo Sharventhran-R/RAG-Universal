@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 import app.parsers  # noqa: F401  -- populate the parser registry (for file_type + resolve)
 from app.api.routes import router
@@ -19,6 +22,7 @@ from app.index.store import IndexStore, verify_index_dimensions
 from app.paths import get_paths
 
 log = logging.getLogger("app.api")
+_STATIC_DIR = Path(__file__).parent / "static"
 
 
 def create_app(
@@ -45,7 +49,7 @@ def create_app(
         application.state.embedder = embedder or _lazy_embedder()
         application.state.llm = llm or _lazy_llm()
 
-        if embedder is None:  # real deployment: warn if Ollama is unreachable
+        if embedder is None and not s.fake_models:  # real deployment: warn if Ollama is unreachable
             try:
                 from app.llm.ollama import OllamaClient
 
@@ -57,6 +61,14 @@ def create_app(
 
     application = FastAPI(title="Universal RAG Document Agent", lifespan=lifespan)
     application.include_router(router)
+
+    # minimal built-in dev UI to exercise the endpoints (no build step)
+    application.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
+
+    @application.get("/", include_in_schema=False)
+    async def _root() -> RedirectResponse:
+        return RedirectResponse("/ui/")
+
     return application
 
 

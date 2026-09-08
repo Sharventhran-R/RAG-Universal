@@ -67,6 +67,17 @@ def _upload(api, session_id, name="notes.txt", content=b"Redis was dropped in fa
     )
 
 
+def test_builtin_ui_is_served_and_api_still_routes(api):
+    root = api.http.get("/", follow_redirects=False)
+    assert root.status_code in (307, 308)
+    assert root.headers["location"] == "/ui/"
+    page = api.http.get("/ui/")
+    assert page.status_code == 200
+    assert "<title>" in page.text.lower()
+    # mounting the UI must not shadow the JSON API
+    assert api.http.post("/sessions", json={"name": "x"}).status_code == 201
+
+
 def test_session_crud_and_404s(api):
     sid = _new_session(api)
     detail = api.http.get(f"/sessions/{sid}")

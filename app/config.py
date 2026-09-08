@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # --- index cache -------------------------------------------------------
     index_cache_size: int = 8
 
+    # --- dev / demo -------------------------------------------------------
+    # FAKE_MODELS=1 makes get_embedder()/get_llm() return the deterministic
+    # offline stand-ins, so the API + worker + UI run with zero model downloads.
+    fake_models: bool = False
+
     @field_validator("data_dir")
     @classmethod
     def _expand(cls, v: Path) -> Path:

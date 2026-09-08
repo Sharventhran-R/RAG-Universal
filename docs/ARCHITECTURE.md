@@ -549,6 +549,8 @@ just writes the blob, inserts the `documents` row (`queued`), and enqueues an
 `ingest_jobs` row.
 
 ```
+GET    /                              -> 307 -> /ui/  (built-in dev console)
+GET    /ui/                           -> static app/api/static/index.html
 POST   /sessions                      -> 201 {id, name, created_at}
 GET    /sessions/{id}                 -> session + document summaries   (404 if missing)
 POST   /sessions/{id}/documents       -> 202 multipart; {document_id, job:{id,status}}
@@ -647,7 +649,7 @@ step 2 precedes any commit.
 | Not building | Seam |
 |---|---|
 | Auth | `session_id` from the URL is the only scope key |
-| Frontend | JSON API only |
+| Frontend | one static `app/api/static/index.html` served at `/` as a dev console — no framework, no build; a real SPA is still out of scope |
 | Hybrid / BM25 search | `retrieval.retrieve()` |
 | Reranking | same |
 | SQL / analytics over tables | tables are markdown; the spreadsheet summary block is the seam for a future profile store |

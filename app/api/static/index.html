@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG Document Agent</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --fg: #e6e8ec; --muted: #9aa3b2; --accent: #5b9dff; --ok: #3fb950;
+    --warn: #d29922; --err: #f85149; --busy: #58a6ff;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-size: 14px; }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    background: var(--panel);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header .grow { flex: 1; }
+  .sesh { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  code.sid { background: var(--panel2); padding: 3px 7px; border-radius: 5px; color: var(--accent); font-size: 12px; }
+  main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.3fr); gap: 16px; padding: 16px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .panel h2 { margin: 0; padding: 12px 14px; font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); border-bottom: 1px solid var(--line); }
+  .panel .body { padding: 14px; }
+  input, textarea, select, button {
+    font: inherit; color: var(--fg); background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px;
+  }
+  input::placeholder, textarea::placeholder { color: #6b7280; }
+  button { cursor: pointer; background: var(--panel2); transition: border-color .15s, background .15s; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #07213f; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > * { min-width: 0; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  label.field input, label.field select { width: 100%; }
+
+  ul.docs { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .doc { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .doc .top { display: flex; align-items: center; gap: 8px; }
+  .doc .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .doc .flags { color: var(--warn); font-size: 12px; margin-top: 4px; }
+  .doc .err { color: var(--err); font-size: 12px; margin-top: 4px; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+  .badge { font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .b-ready { color: var(--ok); border-color: var(--ok); }
+  .b-busy  { color: var(--busy); border-color: var(--busy); }
+  .b-err   { color: var(--err); border-color: var(--err); }
+  .b-warn  { color: var(--warn); border-color: var(--warn); }
+  .x { margin-left: auto; background: transparent; border: none; color: var(--muted); font-size: 16px; padding: 0 4px; }
+  .x:hover { color: var(--err); }
+
+  .answer { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 14px; white-space: pre-wrap; line-height: 1.55; margin-top: 12px; min-height: 40px; }
+  .answer.empty { color: var(--muted); }
+  .banner { border-radius: 7px; padding: 8px 10px; font-size: 12px; margin-top: 10px; }
+  .banner.warn { background: #3a2d10; color: var(--warn); border: 1px solid var(--warn); }
+  .banner.insuf { background: #201a10; color: var(--muted); border: 1px solid var(--line); }
+  sup.cite { color: var(--accent); cursor: pointer; font-weight: 700; }
+  ol.cites { margin: 12px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; }
+  ol.cites li { color: var(--fg); }
+  ol.cites .loc { color: var(--muted); font-size: 12px; }
+  ol.cites .snip { color: var(--muted); font-size: 12px; margin-top: 3px; border-left: 2px solid var(--line); padding-left: 8px; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .toast { position: fixed; right: 16px; bottom: 16px; background: var(--panel2); border: 1px solid var(--err); color: var(--err); padding: 10px 14px; border-radius: 8px; font-size: 13px; max-width: 420px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RAG Document Agent</h1>
+  <div class="sesh">
+    <span class="hint">session</span>
+    <code class="sid" id="sid">none</code>
+    <button id="copySid" title="copy">copy</button>
+  </div>
+  <div class="grow"></div>
+  <div class="sesh">
+    <input id="newName" placeholder="new session name" size="16">
+    <button id="createSesh" class="primary">Create</button>
+    <input id="loadSid" placeholder="load session id" size="22">
+    <button id="loadSeshBtn">Load</button>
+  </div>
+</header>
+
+<main>
+  <section class="panel" id="docsPanel">
+    <h2>Documents</h2>
+    <div class="body">
+      <div class="row">
+        <input type="file" id="fileInput" multiple>
+        <button id="uploadBtn" class="primary">Upload</button>
+      </div>
+      <p class="hint" id="docsHint">Create or load a session first.</p>
+      <ul class="docs" id="docsList"></ul>
+    </div>
+  </section>
+
+  <section class="panel" id="askPanel">
+    <h2>Ask</h2>
+    <div class="body stack">
+      <textarea id="question" rows="3" placeholder="Ask a question about the uploaded documents…"></textarea>
+      <div class="row">
+        <label class="field" style="flex:1">file type
+          <select id="fType">
+            <option value="">any</option>
+            <option>pdf</option><option>docx</option><option>pptx</option>
+            <option>xlsx</option><option>csv</option><option>txt</option>
+            <option>md</option><option>html</option>
+          </select>
+        </label>
+        <label class="field" style="flex:2">filename (exact)
+          <input id="fName" placeholder="optional, e.g. report.pdf">
+        </label>
+      </div>
+      <div class="row">
+        <button id="askBtn" class="primary">Ask</button>
+        <span class="hint" id="askHint"></span>
+      </div>
+      <div class="answer empty" id="answer">The answer and its citations will appear here.</div>
+      <div id="banner"></div>
+      <ol class="cites" id="cites"></ol>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let SID = localStorage.getItem("rag_session_id") || null;
+let pollTimer = null;
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(t._h); t._h = setTimeout(() => t.hidden = true, 5000);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  if (!res.ok) {
+    const detail = body && body.detail ? body.detail : (typeof body === "string" ? body : res.statusText);
+    throw new Error(`${res.status} — ${detail}`);
+  }
+  return body;
+}
+
+function setSession(id) {
+  SID = id;
+  if (id) localStorage.setItem("rag_session_id", id);
+  else localStorage.removeItem("rag_session_id");
+  $("#sid").textContent = id || "none";
+  $("#docsHint").hidden = !!id;
+  refreshDocs();
+}
+
+async function createSession() {
+  const name = $("#newName").value.trim() || "session";
+  try {
+    const s = await api("/sessions", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    $("#newName").value = "";
+    setSession(s.id);
+  } catch (e) { toast(e.message); }
+}
+
+async function loadSession() {
+  const id = $("#loadSid").value.trim();
+  if (!id) return;
+  try {
+    await api("/sessions/" + encodeURIComponent(id)); // 404s if missing
+    $("#loadSid").value = "";
+    setSession(id);
+  } catch (e) { toast(e.message); }
+}
+
+const BUSY = new Set(["queued", "extracting", "chunking", "embedding"]);
+function badgeClass(s) {
+  if (s === "ready") return "b-ready";
+  if (BUSY.has(s)) return "b-busy";
+  if (s === "empty_no_text" || s === "unsupported") return "b-warn";
+  return "b-err";
+}
+
+async function refreshDocs() {
+  clearTimeout(pollTimer);
+  if (!SID) { $("#docsList").innerHTML = ""; return; }
+  let session;
+  try { session = await api("/sessions/" + encodeURIComponent(SID)); }
+  catch (e) { toast(e.message); setSession(null); return; }
+
+  const list = $("#docsList");
+  list.innerHTML = "";
+  for (const d of session.documents) {
+    const li = document.createElement("li");
+    li.className = "doc";
+    const flags = (d.extraction_flags || []).join(", ");
+    li.innerHTML = `
+      <div class="top">
+        <span class="name" title="${d.filename}">${d.filename}</span>
+        <span class="badge ${badgeClass(d.status)}">${d.status}</span>
+        <button class="x" title="delete">×</button>
+      </div>
+      <div class="meta">${d.file_type || "?"} · ${d.block_count ?? "–"} blocks · ${d.chunk_count ?? "–"} chunks</div>
+      ${flags ? `<div class="flags">⚑ ${flags}</div>` : ""}
+      ${d.error ? `<div class="err">${d.error.split("\n").slice(-3).join("\n")}</div>` : ""}`;
+    li.querySelector(".x").onclick = () => deleteDoc(d.id);
+    list.appendChild(li);
+  }
+  if (session.documents.some(d => BUSY.has(d.status))) {
+    pollTimer = setTimeout(refreshDocs, 1500);
+  }
+}
+
+async function uploadFiles() {
+  if (!SID) return toast("Create or load a session first.");
+  const files = $("#fileInput").files;
+  if (!files.length) return;
+  $("#uploadBtn").disabled = true;
+  try {
+    for (const f of files) {
+      const fd = new FormData();
+      fd.append("file", f, f.name);
+      await api(`/sessions/${encodeURIComponent(SID)}/documents`, { method: "POST", body: fd });
+    }
+    $("#fileInput").value = "";
+    refreshDocs();
+  } catch (e) { toast(e.message); }
+  finally { $("#uploadBtn").disabled = false; }
+}
+
+async function deleteDoc(id) {
+  try { await api("/documents/" + encodeURIComponent(id), { method: "DELETE" }); refreshDocs(); }
+  catch (e) { toast(e.message); }
+}
+
+function renderAnswer(r) {
+  const idx = {};
+  r.citations.forEach((c, i) => idx[c.chunk_id] = i + 1);
+  const ans = $("#answer");
+  ans.classList.toggle("empty", false);
+  ans.innerHTML = (r.answer || "").replace(/\[(c_\w+)\]/g, (m, id) =>
+    idx[id] ? `<sup class="cite" data-n="${idx[id]}">[${idx[id]}]</sup>` : "");
+
+  const banner = $("#banner");
+  banner.innerHTML = "";
+  if (r.insufficient_context)
+    banner.innerHTML = `<div class="banner insuf">No answer could be grounded in the documents.</div>`;
+  else if (r.citation_warning)
+    banner.innerHTML = `<div class="banner warn">⚠ ${r.citation_warning}</div>`;
+
+  const ol = $("#cites");
+  ol.innerHTML = "";
+  for (const c of r.citations) {
+    const loc = c.page != null ? `p.${c.page}` : c.sheet ? `sheet ${c.sheet}` : c.slide != null ? `slide ${c.slide}` : "";
+    const li = document.createElement("li");
+    li.innerHTML = `<b>${c.filename}</b> <span class="loc">${loc}</span>
+      <div class="snip">${(c.snippet || "").replace(/</g, "&lt;")}</div>`;
+    ol.appendChild(li);
+  }
+  ans.querySelectorAll("sup.cite").forEach(el => el.onclick = () => {
+    ol.children[el.dataset.n - 1]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
+async function ask() {
+  if (!SID) return toast("Create or load a session first.");
+  const question = $("#question").value.trim();
+  if (!question) return;
+  const payload = { question };
+  if ($("#fType").value) payload.file_type = $("#fType").value;
+  if ($("#fName").value.trim()) payload.filename = $("#fName").value.trim();
+
+  $("#askBtn").disabled = true;
+  $("#askHint").textContent = "thinking…";
+  try {
+    const r = await api(`/sessions/${encodeURIComponent(SID)}/query`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    renderAnswer(r);
+    $("#askHint").textContent = `${r.chunks_used.length} passage(s) cited`;
+  } catch (e) {
+    toast(e.message);
+    $("#askHint").textContent = "";
+  } finally { $("#askBtn").disabled = false; }
+}
+
+$("#createSesh").onclick = createSession;
+$("#loadSeshBtn").onclick = loadSession;
+$("#loadSid").addEventListener("keydown", e => e.key === "Enter" && loadSession());
+$("#uploadBtn").onclick = uploadFiles;
+$("#askBtn").onclick = ask;
+$("#question").addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") ask();
+});
+$("#copySid").onclick = () => SID && navigator.clipboard.writeText(SID).then(() => toast("copied"));
+
+$("#sid").textContent = SID || "none";
+$("#docsHint").hidden = !!SID;
+if (SID) refreshDocs();
+</script>
+</body>
+</html>

@@ -6,9 +6,13 @@ from app.embed.fake import FakeEmbedder
 __all__ = ["Embedder", "FakeEmbedder", "get_embedder"]
 
 
-def get_embedder(*, fake: bool = False) -> Embedder:
-    """Default wiring. ``fake=True`` (or tests) → deterministic offline embedder;
-    otherwise the real local bge model (imported lazily here)."""
+def get_embedder(*, fake: bool | None = None) -> Embedder:
+    """Default wiring. ``fake`` (or ``FAKE_MODELS=1``) → deterministic offline
+    embedder; otherwise the real local bge model (imported lazily here)."""
+    if fake is None:
+        from app.config import get_settings
+
+        fake = get_settings().fake_models
     if fake:
         return FakeEmbedder()
     from app.embed.bge import BgeEmbedder

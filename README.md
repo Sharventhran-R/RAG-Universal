@@ -15,6 +15,11 @@ citations.
 extract→chunk→embed→index. All six endpoints, six parsers, the query pipeline,
 `make seed`, and an end-to-end smoke test are in place and tested offline.
 
+A minimal built-in dev UI is served at **`http://localhost:8000/`** (single
+static file, no build step) — create/load a session, upload files, watch their
+status, and ask questions with rendered citations. Set `FAKE_MODELS=1` to run
+the API + worker + UI with the offline stand-in models (no downloads).
+
 ---
 
 ## Status
@@ -138,21 +143,32 @@ failing. `pytest -m local_llm` needs the real bge model + a running Ollama.
 
 ## Run the app
 
-Two processes plus the local models. First pull the LLM once:
+**Quick look — no downloads.** Run everything with the offline stand-in models
+and click around the UI:
+
+```bash
+export FAKE_MODELS=1                  # Windows: set FAKE_MODELS=1
+uvicorn app.api:app --reload         # terminal 1 — API + UI on :8000
+python -m app.worker                  # terminal 2 — ingestion
+# open http://localhost:8000/
+```
+
+Answers won't be "smart" (the fake LLM just cites the top passage), but every
+moving part is real: upload → background ingest → filtered retrieval → cited
+response → delete.
+
+**Real models.** Drop `FAKE_MODELS`, install `sentence-transformers`, and:
 
 ```bash
 ollama serve
 ollama pull llama3.1:8b
-```
 
-Then:
-
-```bash
-uvicorn app.api:app --reload        # terminal 1 — HTTP API on :8000
+uvicorn app.api:app --reload        # terminal 1 — HTTP API + dev UI on :8000
 python -m app.worker                 # terminal 2 — ingestion (run one or more)
 ```
 
-Drive it:
+Open **http://localhost:8000/** for the built-in UI (create/load a session,
+upload files, watch status, ask questions). Or drive the API directly:
 
 ```bash
 SID=$(curl -sX POST localhost:8000/sessions -H 'content-type: application/json' \
@@ -200,7 +216,7 @@ app/
   extract/              cache.py + extractor.py  (parser dispatch, cache-backed)
   ingest/               pipeline.py (process_document) + reconcile.py
   worker.py             the ingestion daemon  (python -m app.worker)
-  api/                  app.py (create_app) + routes.py + schemas.py
+  api/                  app.py (create_app) + routes.py + schemas.py + static/index.html (dev UI)
   cli.py                `seed`
 fixtures/build_fixtures.py   generates the demo corpus (pdf/xlsx/docx)
 Makefile                test / seed / api / worker
